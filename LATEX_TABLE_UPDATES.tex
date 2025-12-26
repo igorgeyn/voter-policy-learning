@@ -1,0 +1,153 @@
+% ==============================================================================
+% LATEX_TABLE_UPDATES.tex
+% ==============================================================================
+% This file shows how to update your policy-learning.tex to use generated tables
+% instead of hardcoded values. Replace each hardcoded table with \input{}.
+% ==============================================================================
+
+% ==============================================================================
+% TABLE 1: Treatment Definition Comparison (around line 433-448)
+% ==============================================================================
+% REMOVE THIS HARDCODED TABLE:
+% \begin{tabular}{lrll}
+%   \toprule
+% Treatment & Never Treated States & TWFE Estimate & Std. Error \\ 
+%   \midrule
+% Any Ballot Measure (Broad) & 1 & 0.0250** & (0.0103) \\ 
+%   Morality Politics (Focused) & 19 & 0.0288 & (0.0188) \\ 
+%   ...
+%   \bottomrule
+% \end{tabular}
+
+% REPLACE WITH:
+\begin{table}[H]
+\centering
+\caption{Comparison of Treatment Definitions}
+\label{tab:treatment_comparison}
+\input{../output/tables/all_years/table1_treatment_comparison.tex}
+\caption*{\footnotesize Notes: Two-way fixed effects estimates...}
+\end{table}
+
+
+% ==============================================================================
+% TABLE 2: Estimator Comparison (around line 524-538)
+% ==============================================================================
+% This table comparing TWFE vs Sun-Abraham vs Callaway-Sant'Anna
+% REPLACE HARDCODED VERSION WITH:
+
+\begin{table}[H]
+\centering
+\caption{Comparing Traditional and Modern DiD Estimators}
+\label{tab:main_comparison}
+\input{../output/tables/all_years/table2_estimator_comparison.tex}
+\caption*{\footnotesize Notes: Modern estimators account for staggered adoption...}
+\end{table}
+
+
+% ==============================================================================
+% TABLE 3: Bacon Decomposition (around line 570-586)
+% ==============================================================================
+% REMOVE THIS:
+% \begin{tabular}{lcc}
+% \hline\hline
+% Comparison Type & Weight & Classification \\
+% \hline
+% Never vs. Timing Groups & 42\% & Clean \\
+% Earlier vs. Later Treated & 38\% & Problematic \\
+% ...
+
+% REPLACE WITH:
+\begin{table}[H]
+\centering
+\caption{Bacon Decomposition of TWFE Estimate}
+\label{tab:bacon_decomp}
+\input{../output/tables/all_years/table3_bacon_decomposition.tex}
+\caption*{\footnotesize Notes: Decomposition following Goodman-Bacon (2021)...}
+\end{table}
+
+
+% ==============================================================================
+% TABLE 4: Heterogeneous Effects by Timing (around line 598-611)
+% ==============================================================================
+% REMOVE:
+% \begin{tabular}{lcc}
+% \hline\hline
+% Cohort & Effect & Std. Error \\
+% \hline
+% Early Adopters ($\leq$2010) & 0.0551** & (0.0241) \\
+% Late Adopters (>2010) & -0.0175 & (0.0192) \\
+% ...
+
+% REPLACE WITH:
+\begin{table}[H]
+\centering
+\caption{Heterogeneous Effects by Treatment Adoption Timing}
+\label{tab:timing_heterogeneity}
+\input{../output/tables/all_years/table4_timing_heterogeneity.tex}
+\caption*{\footnotesize Notes: Cohorts split by first treatment year...}
+\end{table}
+
+
+% ==============================================================================
+% TABLE 5: Effects by Morality Politics Topic (around line 623-638)
+% ==============================================================================
+% REMOVE:
+% \begin{tabular}{lrrrl}
+% \hline\hline
+% Measure Type & Coefficient & Std. Error & N Treated & Assessment \\
+% \hline
+% Abortion & 0.2234*** & (0.0602) & 359 & Implausible outlier \\
+% Marijuana & 0.0448** & (0.0184) & 3,943 & Only robust effect \\
+% ...
+
+% REPLACE WITH:
+\begin{table}[H]
+\centering
+\caption{Effects by Morality Politics Topic}
+\label{tab:morality_topics}
+\input{../output/tables/all_years/table5_topic_effects.tex}
+\caption*{\footnotesize Notes: Topic-specific TWFE estimates...}
+\end{table}
+
+
+% ==============================================================================
+% TABLE 6: Comprehensive Robustness Checks (around line 740-771)
+% ==============================================================================
+% REMOVE the large hardcoded robustness table
+
+% REPLACE WITH:
+\begin{table}[H]
+\centering
+\caption{Comprehensive Robustness Checks}
+\label{tab:robustness_full}
+\small
+\input{../output/tables/all_years/table6_robustness.tex}
+\caption*{\footnotesize Notes: All specifications use morality-politics treatment...}
+\end{table}
+
+
+% ==============================================================================
+% BENEFITS OF THIS APPROACH
+% ==============================================================================
+%
+% 1. REPRODUCIBILITY: Tables automatically update when you re-run the analysis
+% 2. NO TRANSCRIPTION ERRORS: Numbers come directly from R
+% 3. CONSISTENCY: Formatting is standardized across all tables
+% 4. AUDITABILITY: Anyone can verify tables match the code
+% 5. EASY UPDATES: Change analysis → re-run → tables update automatically
+%
+% ==============================================================================
+
+
+% ==============================================================================
+% REQUIRED GRAPHICSPATH UPDATE
+% ==============================================================================
+% Make sure your graphicspath includes the tables directory:
+
+\graphicspath{
+  {../output/figures/all_years/}
+  {../output/figures/robustness/}
+  {../output/extensions/morality_politics/}
+  {../output/tables/all_years/}          % ADD THIS LINE
+  {../output/tables/appendix/}           % ADD THIS LINE
+}
