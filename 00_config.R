@@ -43,7 +43,7 @@ PATHS <- list(
   # Root
   root = PROJECT_ROOT,
   
-
+  
   # Data directories
   data = file.path(PROJECT_ROOT, "data"),
   data_raw = file.path(PROJECT_ROOT, "data"),
@@ -60,7 +60,7 @@ PATHS <- list(
   tables_appendix = file.path(PROJECT_ROOT, "output", "tables", "appendix"),
   figures = file.path(PROJECT_ROOT, "output", "figures"),
   figures_main = file.path(PROJECT_ROOT, "output", "figures", "all_years"),
-  extensions = file.path(PROJECT_ROOT, "output", "extensions", "morality_politics"),
+  extensions = file.path(PROJECT_ROOT, "output", "extensions", "all_years"),
   
   # Code directory
   code = file.path(PROJECT_ROOT, "code")
@@ -181,9 +181,9 @@ OUTPUT_FILES <- list(
 # Required packages
 REQUIRED_PACKAGES <- c(
   # Data manipulation
-  "tidyverse", "data.table", "haven",
+  "tidyverse", "data.table", "haven", "rlang", "lubridate",
   # Fixed effects and DiD
-
+  
   "fixest", "did", "bacondecomp",
   # Tables
   "modelsummary", "kableExtra", "xtable",

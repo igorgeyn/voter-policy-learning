@@ -154,14 +154,33 @@ for (level in c("low", "med", "high")) {
   level_data <- df %>% filter(.data[[var_name]] == 1)
   
   if (nrow(level_data) > 1000) {
-    extension_results$awareness[[level]] <- feols(
-      news_interest_score ~ did_treatment | state + year,
-      data = level_data,
-      cluster = ~state
-    )
-    log_msg("  ", toupper(level), "awareness:", 
-            fmt_num(coef(extension_results$awareness[[level]])["did_treatment"]),
-            "(n =", format(nrow(level_data), big.mark = ","), ")")
+    # Check if there's treatment variation in this subset
+    n_treated <- sum(level_data$did_treatment, na.rm = TRUE)
+    n_states_treated <- level_data %>% 
+      filter(did_treatment == 1) %>% 
+      pull(state) %>% 
+      n_distinct()
+    
+    if (n_treated > 0 && n_states_treated >= 2) {
+      tryCatch({
+        extension_results$awareness[[level]] <- feols(
+          news_interest_score ~ did_treatment | state + year,
+          data = level_data,
+          cluster = ~state
+        )
+        log_msg("  ", toupper(level), "awareness:", 
+                fmt_num(coef(extension_results$awareness[[level]])["did_treatment"]),
+                "(n =", format(nrow(level_data), big.mark = ","), ")")
+      }, error = function(e) {
+        log_msg("  ", toupper(level), "awareness: model failed (n =", 
+                format(nrow(level_data), big.mark = ","), ")", level = "WARN")
+        extension_results$awareness[[level]] <<- NULL
+      })
+    } else {
+      log_msg("  ", toupper(level), "awareness: insufficient treatment variation (n =", 
+              format(nrow(level_data), big.mark = ","), ")", level = "WARN")
+      extension_results$awareness[[level]] <- NULL
+    }
   }
 }
 
@@ -169,11 +188,17 @@ for (level in c("low", "med", "high")) {
 df$did_x_low <- df$did_treatment * df$awareness_low
 df$did_x_high <- df$did_treatment * df$awareness_high
 
-extension_results$awareness$interaction <- feols(
-  news_interest_score ~ did_treatment + did_x_low + did_x_high | state + year,
-  data = df,
-  cluster = ~state
-)
+tryCatch({
+  extension_results$awareness$interaction <- feols(
+    news_interest_score ~ did_treatment + did_x_low + did_x_high | state + year,
+    data = df,
+    cluster = ~state
+  )
+  log_msg("  Interaction model: done")
+}, error = function(e) {
+  log_msg("  Interaction model failed:", e$message, level = "WARN")
+  extension_results$awareness$interaction <<- NULL
+})
 
 # ==============================================================================
 # PART 3: PERSISTENCE ANALYSIS
@@ -197,27 +222,35 @@ df <- df %>%
   ungroup()
 
 # Contemporaneous effect only
-extension_results$persistence$contemporaneous <- feols(
-  news_interest_score ~ did_treatment | state + year,
-  data = df,
-  cluster = ~state
-)
-log_msg("  Contemporaneous:", 
-        fmt_num(coef(extension_results$persistence$contemporaneous)["did_treatment"]))
+tryCatch({
+  extension_results$persistence$contemporaneous <- feols(
+    news_interest_score ~ did_treatment | state + year,
+    data = df,
+    cluster = ~state
+  )
+  log_msg("  Contemporaneous:", 
+          fmt_num(coef(extension_results$persistence$contemporaneous)["did_treatment"]))
+}, error = function(e) {
+  log_msg("  Contemporaneous model failed:", e$message, level = "WARN")
+})
 
 # With lags
-extension_results$persistence$with_lags <- feols(
-  news_interest_score ~ did_treatment + did_lag1 + did_lag2 | state + year,
-  data = df,
-  cluster = ~state
-)
-log_msg("  Current:", fmt_num(coef(extension_results$persistence$with_lags)["did_treatment"]))
-log_msg("  Lag 1:", fmt_num(coef(extension_results$persistence$with_lags)["did_lag1"]))
-log_msg("  Lag 2:", fmt_num(coef(extension_results$persistence$with_lags)["did_lag2"]))
-
-# Cumulative effect
-cumulative <- sum(coef(extension_results$persistence$with_lags)[c("did_treatment", "did_lag1", "did_lag2")])
-log_msg("  Cumulative effect:", fmt_num(cumulative))
+tryCatch({
+  extension_results$persistence$with_lags <- feols(
+    news_interest_score ~ did_treatment + did_lag1 + did_lag2 | state + year,
+    data = df,
+    cluster = ~state
+  )
+  log_msg("  Current:", fmt_num(coef(extension_results$persistence$with_lags)["did_treatment"]))
+  log_msg("  Lag 1:", fmt_num(coef(extension_results$persistence$with_lags)["did_lag1"]))
+  log_msg("  Lag 2:", fmt_num(coef(extension_results$persistence$with_lags)["did_lag2"]))
+  
+  # Cumulative effect
+  cumulative <- sum(coef(extension_results$persistence$with_lags)[c("did_treatment", "did_lag1", "did_lag2")])
+  log_msg("  Cumulative effect:", fmt_num(cumulative))
+}, error = function(e) {
+  log_msg("  Lagged model failed:", e$message, level = "WARN")
+})
 
 # ==============================================================================
 # PART 4: EVENT STUDY COEFFICIENTS
@@ -227,49 +260,54 @@ log_msg("-" |> rep(70) |> paste(collapse = ""))
 log_msg("PART 4: EVENT STUDY ANALYSIS")
 log_msg("-" |> rep(70) |> paste(collapse = ""))
 
-# Create relative time indicators
-df <- df %>%
-  mutate(
-    rel_time = ifelse(is.finite(state_first_treat), year - state_first_treat, NA),
-    # Bin at endpoints
-    rel_time_binned = case_when(
-      is.na(rel_time) ~ NA_real_,
-      rel_time <= -3 ~ -3,
-      rel_time >= 3 ~ 3,
-      TRUE ~ rel_time
-    )
-  )
-
-# Event study regression
-es_data <- df %>% filter(!is.na(rel_time_binned))
-
-if (nrow(es_data) > 0) {
-  extension_results$event_study$model <- feols(
-    news_interest_score ~ i(rel_time_binned, ref = -1) | state + year,
-    data = es_data,
-    cluster = ~state
-  )
-  
-  # Extract coefficients for plotting
-  es_coefs <- broom::tidy(extension_results$event_study$model) %>%
-    filter(grepl("rel_time", term)) %>%
+tryCatch({
+  # Create relative time indicators
+  # Note: state_first_treat = 10000 for never-treated states
+  df <- df %>%
     mutate(
-      time = as.numeric(gsub("rel_time_binned::", "", term)),
-      ci_low = estimate - 1.96 * std.error,
-      ci_high = estimate + 1.96 * std.error
-    ) %>%
-    # Add reference period
-    bind_rows(data.frame(time = -1, estimate = 0, std.error = 0, 
-                         ci_low = 0, ci_high = 0)) %>%
-    arrange(time)
+      rel_time = ifelse(state_first_treat < 10000, year - state_first_treat, NA),
+      # Bin at endpoints
+      rel_time_binned = case_when(
+        is.na(rel_time) ~ NA_real_,
+        rel_time <= -3 ~ -3,
+        rel_time >= 3 ~ 3,
+        TRUE ~ rel_time
+      )
+    )
   
-  extension_results$event_study$coefficients <- es_coefs
+  # Event study regression
+  es_data <- df %>% filter(!is.na(rel_time_binned))
   
-  log_msg("  Event study coefficients:")
-  for (i in 1:nrow(es_coefs)) {
-    log_msg("    t =", es_coefs$time[i], ":", fmt_num(es_coefs$estimate[i]))
+  if (nrow(es_data) > 0) {
+    extension_results$event_study$model <- feols(
+      news_interest_score ~ i(rel_time_binned, ref = -1) | state + year,
+      data = es_data,
+      cluster = ~state
+    )
+    
+    # Extract coefficients for plotting
+    es_coefs <- broom::tidy(extension_results$event_study$model) %>%
+      filter(grepl("rel_time", term)) %>%
+      mutate(
+        time = as.numeric(gsub("rel_time_binned::", "", term)),
+        ci_low = estimate - 1.96 * std.error,
+        ci_high = estimate + 1.96 * std.error
+      ) %>%
+      # Add reference period
+      bind_rows(data.frame(time = -1, estimate = 0, std.error = 0, 
+                           ci_low = 0, ci_high = 0)) %>%
+      arrange(time)
+    
+    extension_results$event_study$coefficients <- es_coefs
+    
+    log_msg("  Event study coefficients:")
+    for (i in 1:nrow(es_coefs)) {
+      log_msg("    t =", es_coefs$time[i], ":", fmt_num(es_coefs$estimate[i]))
+    }
   }
-}
+}, error = function(e) {
+  log_msg("  Event study failed:", e$message, level = "WARN")
+})
 
 # ==============================================================================
 # PART 5: TREATMENT DEFINITION COMPARISON
@@ -290,31 +328,35 @@ for (def_name in names(treatment_definitions)) {
   var_name <- treatment_definitions[[def_name]]
   
   if (var_name %in% names(df)) {
-    # Count never-treated
-    n_never <- df %>%
-      group_by(state) %>%
-      summarise(ever_treated = max(.data[[var_name]], na.rm = TRUE)) %>%
-      summarise(n_never = sum(ever_treated == 0)) %>%
-      pull(n_never)
-    
-    # Run TWFE
-    m <- feols(
-      as.formula(paste("news_interest_score ~", var_name, "| state + year")),
-      data = df,
-      cluster = ~state
-    )
-    
-    extension_results$comparison[[def_name]] <- list(
-      model = m,
-      n_never_treated = n_never,
-      coefficient = coef(m)[[var_name]],
-      se = se(m)[[var_name]]
-    )
-    
-    log_msg("  ", def_name, ":")
-    log_msg("    Never-treated states:", n_never)
-    log_msg("    TWFE estimate:", fmt_num(coef(m)[[var_name]]), 
-            "(SE:", fmt_num(se(m)[[var_name]]), ")")
+    tryCatch({
+      # Count never-treated
+      n_never <- df %>%
+        group_by(state) %>%
+        summarise(ever_treated = max(.data[[var_name]], na.rm = TRUE)) %>%
+        summarise(n_never = sum(ever_treated == 0)) %>%
+        pull(n_never)
+      
+      # Run TWFE
+      m <- feols(
+        as.formula(paste("news_interest_score ~", var_name, "| state + year")),
+        data = df,
+        cluster = ~state
+      )
+      
+      extension_results$comparison[[def_name]] <- list(
+        model = m,
+        n_never_treated = n_never,
+        coefficient = coef(m)[[var_name]],
+        se = se(m)[[var_name]]
+      )
+      
+      log_msg("  ", def_name, ":")
+      log_msg("    Never-treated states:", n_never)
+      log_msg("    TWFE estimate:", fmt_num(coef(m)[[var_name]]), 
+              "(SE:", fmt_num(se(m)[[var_name]]), ")")
+    }, error = function(e) {
+      log_msg("  ", def_name, "failed:", e$message, level = "WARN")
+    })
   }
 }
 
@@ -326,44 +368,51 @@ log_msg("-" |> rep(70) |> paste(collapse = ""))
 log_msg("PART 6: COHORT-SPECIFIC EFFECTS")
 log_msg("-" |> rep(70) |> paste(collapse = ""))
 
-# Get unique cohorts
-cohorts <- df %>%
-  filter(is.finite(state_first_treat), state_first_treat <= PARAMS$end_year) %>%
-  pull(state_first_treat) %>%
-  unique() %>%
-  sort()
-
-log_msg("  Treatment cohorts:", paste(cohorts, collapse = ", "))
-
-# Effects by cohort
-extension_results$cohort_effects <- list()
-
-for (cohort_year in cohorts) {
-  cohort_data <- df %>%
-    filter(
-      (state_first_treat == cohort_year) |  # This cohort
-        (treatment_group == 0)                 # Or never-treated
-    )
+tryCatch({
+  # Get unique cohorts (state_first_treat = 10000 means never-treated)
+  cohorts <- df %>%
+    filter(state_first_treat < 10000, state_first_treat <= PARAMS$end_year) %>%
+    pull(state_first_treat) %>%
+    unique() %>%
+    sort()
   
-  if (nrow(cohort_data) > 1000) {
-    m <- feols(
-      news_interest_score ~ did_treatment | state + year,
-      data = cohort_data,
-      cluster = ~state
-    )
+  log_msg("  Treatment cohorts:", paste(cohorts, collapse = ", "))
+  
+  # Effects by cohort
+  extension_results$cohort_effects <- list()
+  
+  for (cohort_year in cohorts) {
+    cohort_data <- df %>%
+      filter(
+        (state_first_treat == cohort_year) |  # This cohort
+          (ever_treated == 0)                   # Or never-treated
+      )
     
-    extension_results$cohort_effects[[as.character(cohort_year)]] <- list(
-      model = m,
-      coefficient = coef(m)["did_treatment"],
-      se = se(m)["did_treatment"],
-      n_treated_states = n_distinct(cohort_data$state[cohort_data$treatment_group == 1])
-    )
-    
-    log_msg("    Cohort", cohort_year, ":", 
-            fmt_num(coef(m)["did_treatment"]),
-            "(", n_distinct(cohort_data$state[cohort_data$treatment_group == 1]), "states)")
+    if (nrow(cohort_data) > 1000) {
+      tryCatch({
+        m <- feols(
+          news_interest_score ~ did_treatment | state + year,
+          data = cohort_data,
+          cluster = ~state
+        )
+        
+        extension_results$cohort_effects[[as.character(cohort_year)]] <- list(
+          model = m,
+          n_obs = nrow(cohort_data),
+          coefficient = coef(m)["did_treatment"],
+          se = se(m)["did_treatment"]
+        )
+        
+        log_msg("    Cohort", cohort_year, ":", fmt_num(coef(m)["did_treatment"]),
+                "(n =", format(nrow(cohort_data), big.mark = ","), ")")
+      }, error = function(e) {
+        log_msg("    Cohort", cohort_year, "failed:", e$message, level = "WARN")
+      })
+    }
   }
-}
+}, error = function(e) {
+  log_msg("  Cohort analysis failed:", e$message, level = "WARN")
+})
 
 # ==============================================================================
 # SAVE RESULTS
@@ -404,11 +453,13 @@ log_msg("=" |> rep(70) |> paste(collapse = ""))
 log_msg("")
 log_msg("Key findings:")
 if (!is.null(extension_results$knowledge$twoway_fe)) {
-  log_msg("  Knowledge effect:", fmt_num(know_coef), "(news interest was", 
-          fmt_num(coef(main_results$main$twoway_fe)["did_treatment"]), ")")
+  log_msg("  Knowledge effect:", fmt_num(coef(extension_results$knowledge$twoway_fe)["did_treatment"]))
 }
-log_msg("  Persistence: Effects", 
-        ifelse(abs(coef(extension_results$persistence$with_lags)["did_lag1"]) < 0.01, 
-               "do not persist", "persist"), "beyond treatment year")
+if (!is.null(extension_results$persistence$with_lags)) {
+  lag1_coef <- coef(extension_results$persistence$with_lags)["did_lag1"]
+  log_msg("  Persistence: Effects", 
+          ifelse(abs(lag1_coef) < 0.01, "do not persist", "persist"), 
+          "beyond treatment year")
+}
 log_msg("")
 log_msg("Ready for 04_generate_outputs.R")

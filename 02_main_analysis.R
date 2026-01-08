@@ -125,13 +125,14 @@ log_msg("-" |> rep(70) |> paste(collapse = ""))
 log_msg("2.1 Sun-Abraham estimator...")
 tryCatch({
   # Prepare data for Sun-Abraham
+  # state_first_treat uses 10000 for never-treated (not Inf)
   sa_data <- df %>%
     filter(!is.na(state_first_treat)) %>%
     mutate(
-      # Cohort variable (0 for never-treated, first treatment year otherwise)
-      cohort = ifelse(is.finite(state_first_treat), state_first_treat, 10000),
+      # Cohort variable (10000 for never-treated, first treatment year otherwise)
+      cohort = state_first_treat,
       # Never treated indicator
-      never_treated = !is.finite(state_first_treat) | state_first_treat > PARAMS$end_year
+      never_treated = state_first_treat >= 10000
     )
   
   # Run Sun-Abraham using fixest's sunab()
@@ -144,7 +145,7 @@ tryCatch({
   # Extract overall ATT
   sa_coefs <- coef(results$modern_estimators$sun_abraham)
   sa_att <- mean(sa_coefs[grepl("year::", names(sa_coefs)) & 
-                           as.numeric(gsub(".*::", "", names(sa_coefs))) >= 0], na.rm = TRUE)
+                            as.numeric(gsub(".*::", "", names(sa_coefs))) >= 0], na.rm = TRUE)
   results$modern_estimators$sun_abraham_att <- sa_att
   
   log_msg("    Sun-Abraham ATT:", fmt_num(sa_att))
@@ -168,7 +169,7 @@ tryCatch({
     ) %>%
     left_join(
       df %>% 
-        select(state, cohort_morality, ever_morality = treatment_group) %>% 
+        select(state, cohort_morality, ever_treated) %>% 
         distinct(),
       by = "state"
     ) %>%
@@ -379,11 +380,11 @@ if (all(c("young", "old") %in% names(df))) {
 # 4.4 By adoption timing (early vs late)
 log_msg("4.4 By adoption timing...")
 df <- df %>%
-  mutate(early_adopter = as.numeric(state_first_treat <= 2010 & is.finite(state_first_treat)))
+  mutate(early_adopter = as.numeric(state_first_treat <= 2010 & state_first_treat < 10000))
 
 results$heterogeneity$timing_early <- feols(
   news_interest_score ~ did_treatment | state + year,
-  data = df %>% filter(early_adopter == 1 | treatment_group == 0),
+  data = df %>% filter(early_adopter == 1 | ever_treated == 0),
   cluster = ~state
 )
 
@@ -455,7 +456,7 @@ log_msg("    Robust HC1 SE:", fmt_num(se(results$robustness$se_robust)["did_trea
 log_msg("6.2 Excluding high-intensity states...")
 high_intensity_states <- df %>%
   group_by(state) %>%
-  summarise(total_measures = sum(n_morality, na.rm = TRUE)) %>%
+  summarise(total_measures = sum(n_morality_measures, na.rm = TRUE)) %>%
   arrange(desc(total_measures)) %>%
   slice_head(n = 3) %>%
   pull(state)

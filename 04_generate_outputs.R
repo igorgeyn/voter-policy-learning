@@ -28,11 +28,22 @@ log_msg("Loading results...")
 
 df <- readRDS(file.path(PATHS$data_processed, OUTPUT_FILES$data$analysis_ready))
 results <- readRDS(file.path(PATHS$data_processed, OUTPUT_FILES$data$all_results))
-extensions <- readRDS(file.path(PATHS$data_processed, OUTPUT_FILES$data$extension_results))
+
+# Extension results are optional - may not exist if Step 3 failed
+extensions <- tryCatch({
+  readRDS(file.path(PATHS$data_processed, OUTPUT_FILES$data$extension_results))
+}, error = function(e) {
+  log_msg("  Extension results not found - some outputs will be skipped", level = "WARN")
+  NULL
+})
 
 log_msg("  Analysis data loaded")
 log_msg("  Main results loaded")
-log_msg("  Extension results loaded")
+if (!is.null(extensions)) {
+  log_msg("  Extension results loaded")
+} else {
+  log_msg("  Extension results: NOT AVAILABLE")
+}
 
 # Create output directories
 create_output_dirs()
@@ -55,7 +66,7 @@ news_coef <- coef(results$main$twoway_fe)["did_treatment"]
 news_se <- se(results$main$twoway_fe)["did_treatment"]
 
 # For knowledge, use extension results or placeholder
-if (!is.null(extensions$knowledge$twoway_fe)) {
+if (!is.null(extensions) && !is.null(extensions$knowledge$twoway_fe)) {
   know_coef <- coef(extensions$knowledge$twoway_fe)["did_treatment"]
   know_se <- se(extensions$knowledge$twoway_fe)["did_treatment"]
 } else {
@@ -120,7 +131,7 @@ cohort_trends <- df %>%
   )
 
 p_cohort_trends <- ggplot(cohort_trends, aes(x = year, y = mean_interest, 
-                                              color = cohort, group = cohort)) +
+                                             color = cohort, group = cohort)) +
   geom_line(linewidth = 1) +
   geom_point(size = 2) +
   geom_ribbon(aes(ymin = mean_interest - 1.96*se, ymax = mean_interest + 1.96*se, fill = cohort),
@@ -164,7 +175,7 @@ event_means <- df %>%
   )
 
 p_event_means <- ggplot(event_means, aes(x = rel_time_morality, y = mean_interest,
-                                          color = group, linetype = group)) +
+                                         color = group, linetype = group)) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray70") +
   geom_line(linewidth = 1) +
   geom_point(size = 3) +
@@ -173,7 +184,7 @@ p_event_means <- ggplot(event_means, aes(x = rel_time_morality, y = mean_interes
   scale_color_manual(values = c("Treated States" = "#B2182B", 
                                 "Never-Treated States" = "#2166AC")) +
   scale_linetype_manual(values = c("Treated States" = "solid",
-                                    "Never-Treated States" = "dashed")) +
+                                   "Never-Treated States" = "dashed")) +
   labs(
     title = "Event Study: Pre-Treatment Trends in Relative Time",
     subtitle = "Upward pre-treatment trend suggests selection into treatment",
@@ -195,30 +206,28 @@ log_msg("  Saved:", OUTPUT_FILES$figures$parallel_trends_event)
 # -----------------------------------------------------------------------------
 log_msg("Figure: Event Study Morality...")
 
-if (!is.null(extensions$event_study$coefficients)) {
+if (!is.null(extensions) && !is.null(extensions$event_study$coefficients)) {
   es_coefs <- extensions$event_study$coefficients
-} else {
+} else if (!is.null(extensions) && !is.null(extensions$event_study$model)) {
   # Create from model if available
-  if (!is.null(extensions$event_study$model)) {
-    es_coefs <- broom::tidy(extensions$event_study$model) %>%
-      filter(grepl("rel_time", term)) %>%
-      mutate(
-        time = as.numeric(gsub("rel_time_binned::", "", term)),
-        ci_low = estimate - 1.96 * std.error,
-        ci_high = estimate + 1.96 * std.error
-      ) %>%
-      bind_rows(data.frame(time = -1, estimate = 0, std.error = 0, 
-                           ci_low = 0, ci_high = 0)) %>%
-      arrange(time)
-  } else {
-    # Placeholder data
-    es_coefs <- data.frame(
-      time = -3:3,
-      estimate = c(-0.01, 0.005, 0, 0.015, 0.01, 0.005, 0),
-      ci_low = c(-0.04, -0.02, 0, -0.01, -0.02, -0.025, -0.03),
-      ci_high = c(0.02, 0.03, 0, 0.04, 0.04, 0.035, 0.03)
-    )
-  }
+  es_coefs <- broom::tidy(extensions$event_study$model) %>%
+    filter(grepl("rel_time", term)) %>%
+    mutate(
+      time = as.numeric(gsub("rel_time_binned::", "", term)),
+      ci_low = estimate - 1.96 * std.error,
+      ci_high = estimate + 1.96 * std.error
+    ) %>%
+    bind_rows(data.frame(time = -1, estimate = 0, std.error = 0, 
+                         ci_low = 0, ci_high = 0)) %>%
+    arrange(time)
+} else {
+  # Placeholder data
+  es_coefs <- data.frame(
+    time = -3:3,
+    estimate = c(-0.01, 0.005, 0, 0.015, 0.01, 0.005, 0),
+    ci_low = c(-0.04, -0.02, 0, -0.01, -0.02, -0.025, -0.03),
+    ci_high = c(0.02, 0.03, 0, 0.04, 0.04, 0.035, 0.03)
+  )
 }
 
 p_event_study <- ggplot(es_coefs, aes(x = time, y = estimate)) +
@@ -343,43 +352,66 @@ if (nrow(het_data) > 0) {
 # -----------------------------------------------------------------------------
 log_msg("Figure: Awareness Effects...")
 
-if (!is.null(extensions$awareness$low)) {
-  awareness_data <- data.frame(
-    Level = c("Low", "Medium", "High"),
-    Estimate = c(
+# Build awareness data only from available results
+awareness_available <- !is.null(extensions) && 
+  (!is.null(extensions$awareness$low) || 
+     !is.null(extensions$awareness$med) || 
+     !is.null(extensions$awareness$high))
+
+if (awareness_available) {
+  awareness_list <- list()
+  
+  if (!is.null(extensions$awareness$low)) {
+    awareness_list$Low <- c(
       coef(extensions$awareness$low)["did_treatment"],
+      se(extensions$awareness$low)["did_treatment"]
+    )
+  }
+  if (!is.null(extensions$awareness$med)) {
+    awareness_list$Medium <- c(
       coef(extensions$awareness$med)["did_treatment"],
-      coef(extensions$awareness$high)["did_treatment"]
-    ),
-    SE = c(
-      se(extensions$awareness$low)["did_treatment"],
-      se(extensions$awareness$med)["did_treatment"],
+      se(extensions$awareness$med)["did_treatment"]
+    )
+  }
+  if (!is.null(extensions$awareness$high)) {
+    awareness_list$High <- c(
+      coef(extensions$awareness$high)["did_treatment"],
       se(extensions$awareness$high)["did_treatment"]
     )
-  ) %>%
-    mutate(
-      CI_low = Estimate - 1.96 * SE,
-      CI_high = Estimate + 1.96 * SE,
-      Level = factor(Level, levels = c("Low", "Medium", "High"))
-    )
+  }
   
-  p_awareness <- ggplot(awareness_data, aes(x = Level, y = Estimate)) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
-    geom_col(fill = "#2166AC", alpha = 0.7, width = 0.6) +
-    geom_errorbar(aes(ymin = CI_low, ymax = CI_high), width = 0.15, linewidth = 0.8) +
-    labs(
-      title = "Effects by Political Awareness Level",
-      subtitle = "Testing overload vs. activation hypotheses",
-      x = "Baseline Political Awareness Tercile",
-      y = "Effect on News Interest",
-      caption = "Note: Awareness terciles defined by baseline news interest. 95% CIs shown."
+  if (length(awareness_list) > 0) {
+    awareness_data <- data.frame(
+      Level = names(awareness_list),
+      Estimate = sapply(awareness_list, `[`, 1),
+      SE = sapply(awareness_list, `[`, 2)
+    ) %>%
+      mutate(
+        CI_low = Estimate - 1.96 * SE,
+        CI_high = Estimate + 1.96 * SE,
+        Level = factor(Level, levels = c("Low", "Medium", "High"))
+      )
+    
+    p_awareness <- ggplot(awareness_data, aes(x = Level, y = Estimate)) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+      geom_col(fill = "#2166AC", alpha = 0.7, width = 0.6) +
+      geom_errorbar(aes(ymin = CI_low, ymax = CI_high), width = 0.15, linewidth = 0.8) +
+      labs(
+        title = "Effects by Political Awareness Level",
+        subtitle = "Testing overload vs. activation hypotheses",
+        x = "Baseline Political Awareness Tercile",
+        y = "Effect on News Interest",
+        caption = "Note: Awareness terciles defined by baseline news interest. 95% CIs shown."
+      )
+    
+    ggsave(
+      file.path(PATHS$extensions, OUTPUT_FILES$figures$awareness_effects),
+      p_awareness, width = 8, height = 6, device = "pdf"
     )
-  
-  ggsave(
-    file.path(PATHS$extensions, OUTPUT_FILES$figures$awareness_effects),
-    p_awareness, width = 8, height = 6, device = "pdf"
-  )
-  log_msg("  Saved:", OUTPUT_FILES$figures$awareness_effects)
+    log_msg("  Saved:", OUTPUT_FILES$figures$awareness_effects)
+  }
+} else {
+  log_msg("  Skipped - no awareness results available", level = "WARN")
 }
 
 # ==============================================================================
@@ -571,7 +603,7 @@ if (!is.null(results$heterogeneity$timing_early) && !is.null(results$heterogenei
   early_se <- se(results$heterogeneity$timing_early)["did_treatment"]
   early_p <- 2 * pnorm(-abs(early_coef / early_se))
   
-
+  
   late_coef <- coef(results$heterogeneity$timing_late)["did_treatment"]
   late_se <- se(results$heterogeneity$timing_late)["did_treatment"]
   late_p <- 2 * pnorm(-abs(late_coef / late_se))
@@ -656,25 +688,25 @@ robustness_rows <- list()
 
 # Traditional TWFE variants
 robustness_rows$baseline <- c("Baseline TWFE", 
-                               sprintf("%.4f", coef(results$main$twoway_fe)["did_treatment"]),
-                               sprintf("(%.4f)", se(results$main$twoway_fe)["did_treatment"]))
+                              sprintf("%.4f", coef(results$main$twoway_fe)["did_treatment"]),
+                              sprintf("(%.4f)", se(results$main$twoway_fe)["did_treatment"]))
 
 if (!is.null(results$main$state_trends)) {
   robustness_rows$trends <- c("State-specific trends",
-                               sprintf("%.4f", coef(results$main$state_trends)["did_treatment"]),
-                               sprintf("(%.4f)", se(results$main$state_trends)["did_treatment"]))
+                              sprintf("%.4f", coef(results$main$state_trends)["did_treatment"]),
+                              sprintf("(%.4f)", se(results$main$state_trends)["did_treatment"]))
 }
 
 if (!is.null(results$robustness$drop_high_intensity)) {
   robustness_rows$drop_high <- c("Drop high-intensity states",
-                                  sprintf("%.4f", coef(results$robustness$drop_high_intensity)["did_treatment"]),
-                                  sprintf("(%.4f)", se(results$robustness$drop_high_intensity)["did_treatment"]))
+                                 sprintf("%.4f", coef(results$robustness$drop_high_intensity)["did_treatment"]),
+                                 sprintf("(%.4f)", se(results$robustness$drop_high_intensity)["did_treatment"]))
 }
 
 if (!is.null(results$robustness$no_2020)) {
   robustness_rows$no_2020 <- c("Exclude 2020 (COVID)",
-                                sprintf("%.4f", coef(results$robustness$no_2020)["did_treatment"]),
-                                sprintf("(%.4f)", se(results$robustness$no_2020)["did_treatment"]))
+                               sprintf("%.4f", coef(results$robustness$no_2020)["did_treatment"]),
+                               sprintf("(%.4f)", se(results$robustness$no_2020)["did_treatment"]))
 }
 
 # Modern estimators

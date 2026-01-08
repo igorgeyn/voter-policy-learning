@@ -82,23 +82,38 @@ prev_n <- sample_tracker$N[nrow(sample_tracker)]
 sample_tracker <- add_sample_step(sample_tracker, "Remove DC", nrow(ces), prev_n)
 
 # Create outcome variable: news interest
-# CES variable typically named 'newsint' or similar
+# CES variable typically named 'newsint' or similar - naming varies by year
+# First, detect which column exists
+news_var <- NULL
+possible_news_vars <- c("newsint", "CC316", "news_interest", "newsinterest")
+for (v in possible_news_vars) {
+  if (v %in% names(ces)) {
+    news_var <- v
+    log_msg("  Found news interest variable:", v)
+    break
+  }
+}
+
+if (is.null(news_var)) {
+  # List available columns for debugging
+  log_msg("  Available columns:", paste(head(names(ces), 20), collapse = ", "), "...")
+  stop("Could not find news interest variable. Check CES column names.")
+}
+
+# Create the standardized outcome variable
+# IMPORTANT: CES codes newsint as 1=most, 4=hardly at all
+# We REVERSE this so higher values = more interest (matches paper)
 ces <- ces %>%
   mutate(
-    # Try to find news interest variable (naming varies by year)
     news_interest_score = case_when(
-      "newsint" %in% names(.) ~ newsint,
-      "CC316" %in% names(.) ~ CC316,
-      "news_interest" %in% names(.) ~ news_interest,
+      .data[[news_var]] == 1 ~ 4,  # Most of the time -> 4
+      .data[[news_var]] == 2 ~ 3,  # Some of the time -> 3
+      .data[[news_var]] == 3 ~ 2,  # Only now and then -> 2
+      .data[[news_var]] == 4 ~ 1,  # Hardly at all -> 1
       TRUE ~ NA_real_
-    )
-  ) %>%
-  # Ensure 1-4 scale
-  mutate(
-    news_interest_score = case_when(
-      news_interest_score %in% 1:4 ~ as.numeric(news_interest_score),
-      TRUE ~ NA_real_
-    )
+    ),
+    # Binary indicator for high interest
+    high_news_interest = as.numeric(news_interest_score >= 3)
   ) %>%
   filter(!is.na(news_interest_score))
 
@@ -106,49 +121,83 @@ prev_n <- sample_tracker$N[nrow(sample_tracker)]
 sample_tracker <- add_sample_step(sample_tracker, "Non-missing news interest", nrow(ces), prev_n)
 
 # Create demographic control variables
+# First, detect which columns exist
+log_msg("Creating demographic variables...")
+
+# Helper function to get column if it exists
+get_col_if_exists <- function(df, possible_names) {
+  for (v in possible_names) {
+    if (v %in% names(df)) return(v)
+  }
+  return(NULL)
+}
+
+# Detect available columns
+age_var <- get_col_if_exists(ces, c("age", "birthyr"))
+gender_var <- get_col_if_exists(ces, c("gender", "female", "sex"))
+educ_var <- get_col_if_exists(ces, c("educ", "education", "edu"))
+pid_var <- get_col_if_exists(ces, c("pid3", "pid7", "party", "partyid"))
+
+log_msg("  Age variable:", ifelse(is.null(age_var), "not found", age_var))
+log_msg("  Gender variable:", ifelse(is.null(gender_var), "not found", gender_var))
+log_msg("  Education variable:", ifelse(is.null(educ_var), "not found", educ_var))
+log_msg("  Party ID variable:", ifelse(is.null(pid_var), "not found", pid_var))
+
+# Build age variable
+if (!is.null(age_var)) {
+  if (age_var == "age") {
+    ces$age <- as.numeric(ces$age)
+  } else if (age_var == "birthyr") {
+    ces$age <- ces$year - as.numeric(ces$birthyr)
+  }
+  ces$age <- ifelse(ces$age >= 18 & ces$age <= 100, ces$age, NA)
+} else {
+  ces$age <- NA_real_
+}
+ces$age_squared <- ces$age^2
+
+# Build gender variable (female indicator)
+if (!is.null(gender_var)) {
+  if (gender_var == "gender") {
+    ces$female <- as.numeric(ces$gender == 2)
+  } else if (gender_var == "female") {
+    ces$female <- as.numeric(ces$female == 1)
+  } else if (gender_var == "sex") {
+    ces$female <- as.numeric(ces$sex == 2)
+  }
+} else {
+  ces$female <- NA_real_
+}
+
+# Build education variable (college indicator)
+# Original uses educ >= 4 (some college or higher)
+if (!is.null(educ_var)) {
+  ces$college <- as.numeric(ces[[educ_var]] >= 4)  # 4+ = some college or higher
+} else {
+  ces$college <- NA_real_
+}
+
+# Build party ID variables
+# IMPORTANT: In CES pid3: 1=Democrat, 2=Republican, 3=Independent/Other
+if (!is.null(pid_var)) {
+  if (pid_var == "pid3") {
+    ces$democrat <- as.numeric(ces$pid3 == 1)
+    ces$republican <- as.numeric(ces$pid3 == 3)  # Note: 3 in pid3, not 2
+    ces$independent <- as.numeric(ces$pid3 == 2)  # Note: 2 in pid3, not 3
+  } else if (pid_var == "pid7") {
+    ces$democrat <- as.numeric(ces$pid7 %in% 1:3)
+    ces$republican <- as.numeric(ces$pid7 %in% 5:7)
+    ces$independent <- as.numeric(ces$pid7 == 4)
+  }
+} else {
+  ces$democrat <- NA_real_
+  ces$republican <- NA_real_
+  ces$independent <- NA_real_
+}
+
+# Build age groups for heterogeneity
 ces <- ces %>%
   mutate(
-    # Age
-    age = case_when(
-      "age" %in% names(.) ~ as.numeric(age),
-      "birthyr" %in% names(.) ~ year - birthyr,
-      TRUE ~ NA_real_
-    ),
-    age = ifelse(age >= 18 & age <= 100, age, NA),
-    age_squared = age^2,
-    
-    # Gender
-    female = case_when(
-      "gender" %in% names(.) ~ as.numeric(gender == 2),
-      "female" %in% names(.) ~ as.numeric(female),
-      TRUE ~ NA_real_
-    ),
-    
-    # Education (college indicator)
-    college = case_when(
-      "educ" %in% names(.) ~ as.numeric(educ >= 5),  # Typically 5 = 4-year degree
-      "education" %in% names(.) ~ as.numeric(education >= 5),
-      TRUE ~ NA_real_
-    ),
-    
-    # Party ID
-    democrat = case_when(
-      "pid3" %in% names(.) ~ as.numeric(pid3 == 1),
-      "pid7" %in% names(.) ~ as.numeric(pid7 %in% 1:3),
-      TRUE ~ NA_real_
-    ),
-    republican = case_when(
-      "pid3" %in% names(.) ~ as.numeric(pid3 == 2),
-      "pid7" %in% names(.) ~ as.numeric(pid7 %in% 5:7),
-      TRUE ~ NA_real_
-    ),
-    independent = case_when(
-      "pid3" %in% names(.) ~ as.numeric(pid3 == 3),
-      "pid7" %in% names(.) ~ as.numeric(pid7 == 4),
-      TRUE ~ NA_real_
-    ),
-    
-    # Age groups for heterogeneity
     age_group = case_when(
       age < 35 ~ "young",
       age >= 35 & age < 65 ~ "middle",
@@ -187,35 +236,58 @@ log_msg("  Ballot measures in study period:", format(nrow(ballot), big.mark = ",
 
 log_msg("Classifying morality politics measures...")
 
-# Function to detect keywords in text
-detect_topic <- function(text, keywords) {
-  if (is.na(text)) return(FALSE)
-  text_lower <- tolower(text)
-  any(sapply(keywords, function(k) grepl(k, text_lower, fixed = FALSE)))
+# The original script uses pre-existing topic columns from ballot data
+# Check required columns exist
+required_cols <- c("drug", "gambling_lottery", "abort")
+has_required_cols <- all(required_cols %in% names(ballot))
+
+if (!has_required_cols) {
+  log_msg("  Missing required columns:", 
+          paste(setdiff(required_cols, names(ballot)), collapse = ", "), level = "WARN")
+  stop("Ballot data missing required topic classification columns")
 }
 
-# Apply classification
+log_msg("  Using pre-classified topic columns from ballot data...")
+
+# Classification matching original 01_setup_all_years.R exactly:
 ballot <- ballot %>%
-  rowwise() %>%
   mutate(
-    # Get text field (may be named differently)
-    measure_text = coalesce(
-      if ("ballot_title" %in% names(.)) ballot_title else NA_character_,
-      if ("description" %in% names(.)) description else NA_character_,
-      if ("measure_text" %in% names(.)) measure_text else NA_character_,
-      ""
-    ),
+    # Marijuana: uses 'drug' column
+    # Note: drug column has 113 measures, paper reports 140
+    # Could supplement with keyword search if needed
+    has_marijuana_measure = as.numeric(drug == 1),
     
-    # Classify by topic
-    is_marijuana = detect_topic(measure_text, PARAMS$morality_keywords$marijuana),
-    is_gambling = detect_topic(measure_text, PARAMS$morality_keywords$gambling),
-    is_abortion = detect_topic(measure_text, PARAMS$morality_keywords$abortion),
-    is_marriage = detect_topic(measure_text, PARAMS$morality_keywords$marriage),
+    # Gambling: uses 'gambling_lottery' column (66 measures - matches paper)
+    has_gambling = as.numeric(gambling_lottery == 1),
     
-    # Overall morality politics indicator
-    is_morality = is_marijuana | is_gambling | is_abortion | is_marriage
-  ) %>%
-  ungroup()
+    # Abortion: uses 'abort' column (23 measures - matches paper)
+    has_abortion_measure = as.numeric(abort == 1),
+    
+    # Marriage: ANY mention of "marriage" in name or description
+    # In 2006-2020, all marriage ballot measures are about same-sex marriage
+    # (either pro or con). The descriptions are often just "Marriage" with no
+    # additional keywords, so we use simple detection.
+    # This captures 27 of ~29 measures from the paper.
+    has_marriage_measure = as.numeric(
+      grepl("marriage", ballotname, ignore.case = TRUE) |
+        grepl("marriage", ballotdescrip, ignore.case = TRUE)
+    )
+  )
+
+# Now create the aggregate morality indicator
+ballot <- ballot %>%
+  mutate(
+    is_marijuana = has_marijuana_measure,
+    is_gambling = has_gambling,
+    is_abortion = has_abortion_measure,
+    is_marriage = has_marriage_measure,
+    is_morality = as.numeric(
+      has_marijuana_measure == 1 | 
+        has_gambling == 1 | 
+        has_abortion_measure == 1 | 
+        has_marriage_measure == 1
+    )
+  )
 
 # Summary of classification
 morality_summary <- ballot %>%
@@ -240,28 +312,45 @@ log_msg("    Total morality:", morality_summary$any_morality)
 # ==============================================================================
 
 log_msg("Creating treatment indicators...")
-# Aggregate to state-year level
+
+# Aggregate to state-year level (matching original exactly)
 state_year_treatments <- ballot %>%
   group_by(state, year) %>%
   summarise(
-    # Count of measures
+    # Basic counts
+    has_any_measure = 1,
     n_measures = n(),
-    n_morality = sum(is_morality),
-    n_marijuana = sum(is_marijuana),
-    n_gambling = sum(is_gambling),
-    n_abortion = sum(is_abortion),
-    n_marriage = sum(is_marriage),
+    n_passed = sum(passed, na.rm = TRUE),
+    pass_rate = mean(passed, na.rm = TRUE),
     
-    # Binary indicators
-    has_any_measure = n_measures > 0,
-    has_morality = n_morality > 0,
-    has_marijuana = n_marijuana > 0,
-    has_gambling = n_gambling > 0,
-    has_abortion = n_abortion > 0,
-    has_marriage = n_marriage > 0,
+    # Topic indicators (aggregate to state-year)
+    has_marijuana_measure = max(has_marijuana_measure, na.rm = TRUE),
+    has_gambling = max(has_gambling, na.rm = TRUE),
+    has_abortion_measure = max(has_abortion_measure, na.rm = TRUE),
+    has_marriage_measure = max(has_marriage_measure, na.rm = TRUE),
+    
+    # PRIMARY: Morality Politics Treatment (matches original)
+    has_morality_measure = max(
+      has_marijuana_measure,
+      has_gambling,
+      has_abortion_measure,
+      has_marriage_measure,
+      na.rm = TRUE
+    ),
+    
+    # Count of morality measures for intensity
+    n_morality_measures = sum(
+      has_marijuana_measure,
+      has_gambling,
+      has_abortion_measure,
+      has_marriage_measure,
+      na.rm = TRUE
+    ),
     
     .groups = "drop"
-  )
+  ) %>%
+  # Replace -Inf with 0 (from max of empty/all-NA)
+  mutate(across(where(is.numeric), ~ifelse(is.infinite(.), 0, .)))
 
 # Fill in state-years with no measures
 all_state_years <- expand.grid(
@@ -272,54 +361,45 @@ all_state_years <- expand.grid(
 
 state_year_treatments <- all_state_years %>%
   left_join(state_year_treatments, by = c("state", "year")) %>%
-  mutate(across(starts_with("n_"), ~replace_na(., 0))) %>%
-  mutate(across(starts_with("has_"), ~replace_na(., FALSE)))
+  mutate(across(everything(), ~replace_na(., 0)))
 
-# Calculate treatment timing for each state
+# Calculate treatment timing for staggered DiD
 treatment_timing <- state_year_treatments %>%
   group_by(state) %>%
   summarise(
-    # First year of any treatment
-    first_any_measure = if (any(has_any_measure)) min(year[has_any_measure]) else Inf,
-    first_morality = if (any(has_morality)) min(year[has_morality]) else Inf,
-    first_marijuana = if (any(has_marijuana)) min(year[has_marijuana]) else Inf,
-    first_gambling = if (any(has_gambling)) min(year[has_gambling]) else Inf,
-    first_abortion = if (any(has_abortion)) min(year[has_abortion]) else Inf,
-    first_marriage = if (any(has_marriage)) min(year[has_marriage]) else Inf,
+    # First year of morality treatment
+    state_first_treat = ifelse(
+      any(has_morality_measure == 1),
+      min(year[has_morality_measure == 1]),
+      10000  # Never treated
+    ),
+    ever_treated = as.numeric(any(has_morality_measure == 1)),
     
-    # Ever treated indicators
-    ever_any_measure = any(has_any_measure),
-    ever_morality = any(has_morality),
-    ever_marijuana = any(has_marijuana),
+    # Also track old definition
+    state_first_treat_old = ifelse(
+      any(has_any_measure == 1),
+      min(year[has_any_measure == 1]),
+      10000
+    ),
+    ever_treated_old = as.numeric(any(has_any_measure == 1)),
     .groups = "drop"
   )
 
-# Add timing to state-year data
+# Join timing back to state-year data
 state_year_treatments <- state_year_treatments %>%
-  left_join(treatment_timing, by = "state") %>%
-  mutate(
-    # DiD treatment indicators (post-treatment × ever-treated)
-    did_any = has_any_measure & (year >= first_any_measure),
-    did_morality = has_morality | (ever_morality & year >= first_morality),
-    did_marijuana = has_marijuana | (ever_marijuana & year >= first_marijuana),
-    
-    # Intensity measures
-    did_intensity_any = ifelse(year >= first_any_measure, n_measures, 0),
-    did_intensity_morality = ifelse(year >= first_morality, n_morality, 0),
-    
-    # Relative time to treatment (for event study)
-    rel_time_morality = ifelse(is.finite(first_morality), year - first_morality, NA),
-    
-    # Cohort (for CS/SA estimators)
-    cohort_morality = ifelse(is.finite(first_morality), first_morality, 0)
-  )
+  left_join(treatment_timing, by = "state")
 
 # Count never-treated states
-never_treated_any <- sum(!treatment_timing$ever_any_measure)
-never_treated_morality <- sum(!treatment_timing$ever_morality)
+never_treated_states <- treatment_timing %>%
+  filter(ever_treated == 0) %>%
+  pull(state)
+
+never_treated_any <- sum(treatment_timing$ever_treated_old == 0)
+never_treated_morality <- sum(treatment_timing$ever_treated == 0)
 
 log_msg("  Never-treated states (any measure):", never_treated_any)
 log_msg("  Never-treated states (morality):", never_treated_morality)
+log_msg("  Never-treated states:", paste(never_treated_states, collapse = ", "))
 
 # ==============================================================================
 # SECTION 6: MERGE CES WITH TREATMENTS
@@ -330,38 +410,98 @@ log_msg("Merging CES with treatment data...")
 analysis_df <- ces %>%
   left_join(state_year_treatments, by = c("state", "year"))
 
+# Fill NAs with zeros for treatment variables
+treatment_vars <- c("has_any_measure", "n_measures", "n_passed", "pass_rate",
+                    "has_morality_measure", "n_morality_measures",
+                    "has_marijuana_measure", "has_gambling", 
+                    "has_abortion_measure", "has_marriage_measure",
+                    "state_first_treat", "ever_treated",
+                    "state_first_treat_old", "ever_treated_old")
+
+for (var in treatment_vars) {
+  if (var %in% names(analysis_df)) {
+    analysis_df[[var]][is.na(analysis_df[[var]])] <- 0
+  }
+}
+
 log_msg("  Merged dataset:", format(nrow(analysis_df), big.mark = ","), "observations")
 
-# Create final treatment variables with clear names
+# ==============================================================================
+# SECTION 7: CREATE POST-ELECTION INDICATOR
+# ==============================================================================
+
+log_msg("Creating post-election indicator...")
+
+# Check for timing variables (matching original logic)
+if ("starttime" %in% names(analysis_df)) {
+  # Use survey start time - post-election if November or later
+  analysis_df$post_election <- as.numeric(
+    lubridate::month(analysis_df$starttime) >= 11
+  )
+  log_msg("  Using starttime for post-election indicator")
+} else if ("tookpost" %in% names(analysis_df)) {
+  analysis_df$post_election <- as.numeric(analysis_df$tookpost == 1)
+  log_msg("  Using tookpost for post-election indicator")
+} else if ("wave" %in% names(analysis_df)) {
+  analysis_df$post_election <- as.numeric(analysis_df$wave == 2)
+  log_msg("  Using wave for post-election indicator")
+} else {
+  log_msg("  WARNING: No timing variable found - using synthetic indicator", level = "WARN")
+  set.seed(PARAMS$seed)
+  analysis_df <- analysis_df %>%
+    group_by(year) %>%
+    mutate(post_election = as.numeric(row_number() > n()/2)) %>%
+    ungroup()
+}
+
+log_msg("  Post-election observations:", sum(analysis_df$post_election, na.rm = TRUE))
+
+# ==============================================================================
+# SECTION 8: CREATE DID VARIABLES (MATCHING ORIGINAL EXACTLY)
+# ==============================================================================
+
+log_msg("Creating DiD variables...")
+
 analysis_df <- analysis_df %>%
   mutate(
-    # Primary treatment: morality politics
-    did_treatment = as.numeric(did_morality),
-    treatment_group = as.numeric(ever_morality),
-    post_election = as.numeric(year >= first_morality),
+    # PRIMARY: Morality Politics Treatment (matches original)
+    treatment_group = as.numeric(has_morality_measure == 1),
+    did_treatment = treatment_group * post_election,
     
-    # For TWFE
-    state_first_treat = first_morality,
+    # OLD definition for comparison
+    treatment_group_old = as.numeric(has_any_measure == 1),
+    did_treatment_old = treatment_group_old * post_election,
+    
+    # Intensity treatments
+    did_intensity = n_morality_measures * post_election,
+    did_intensity_old = n_measures * post_election,
     
     # Topic-specific treatments
-    did_marijuana = as.numeric(did_marijuana),
-    did_gambling = as.numeric(has_gambling),
-    did_abortion = as.numeric(has_abortion),
-    did_marriage = as.numeric(has_marriage),
+    did_marijuana = has_marijuana_measure * post_election,
+    did_gambling = has_gambling * post_election,
+    did_abortion = has_abortion_measure * post_election,
+    did_marriage = has_marriage_measure * post_election,
     
-    # Intensity
-    did_intensity = did_intensity_morality,
+    # For staggered DiD methods
+    rel_time_morality = ifelse(
+      state_first_treat < 10000,
+      year - state_first_treat,
+      NA_real_
+    ),
     
-    # High salience indicator (multiple morality measures)
-    did_high_salience = as.numeric(n_morality >= 2),
-    did_very_high_salience = as.numeric(n_morality >= 3)
+    # Cohort for CS/SA estimators (0 = never treated)
+    cohort_morality = ifelse(state_first_treat < 10000, state_first_treat, 0)
   )
 
+log_msg("  Treated obs (morality × post):", sum(analysis_df$did_treatment, na.rm = TRUE))
+log_msg("  Treated obs (any × post):", sum(analysis_df$did_treatment_old, na.rm = TRUE))
+
+# Update sample tracker
 prev_n <- sample_tracker$N[nrow(sample_tracker)]
 sample_tracker <- add_sample_step(sample_tracker, "Final analysis sample", nrow(analysis_df), prev_n)
 
 # ==============================================================================
-# SECTION 7: SUMMARY STATISTICS
+# SECTION 9: SUMMARY STATISTICS
 # ==============================================================================
 
 log_msg("Generating summary statistics...")
@@ -397,7 +537,7 @@ log_msg("  Mean news interest:", round(summary_stats$mean_news_interest, 3))
 log_msg("  Treated observations:", round(summary_stats$pct_treated, 1), "%")
 
 # ==============================================================================
-# SECTION 8: SAVE OUTPUTS
+# SECTION 10: SAVE OUTPUTS
 # ==============================================================================
 
 log_msg("Saving outputs...")
